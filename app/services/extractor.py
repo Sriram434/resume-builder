@@ -26,7 +26,7 @@ def _read_resume_text(file_bytes: bytes, filename: str | None) -> tuple[str, int
         return "\n\n".join(pages).strip(), len(pdf.pages)
 
 
-async def _get_skills_from_groq(resume_text: str) -> list[str]:
+async def _get_skills_from_groq(resume_text: str) -> dict[str, list[str]]:
     api_key = os.getenv("GROQ_API_KEY")
     if not api_key:
         raise HTTPException(status_code=500, detail="GROQ_API_KEY is missing.")
@@ -39,8 +39,13 @@ async def _get_skills_from_groq(resume_text: str) -> list[str]:
             {
                 "role": "system",
                 "content": (
-                    "Extract only the user's technical skills from the resume text. "
-                    'Return JSON in this exact shape: {"skills":["Python","FastAPI"]}.'
+                    "Extract the candidate's technical skills from the resume and group related skills "
+                    "into logical categories. Respond with valid JSON only in this exact outer shape: "
+                    '{"categories":{"Frontend":["React","Angular"],"Backend":["FastAPI","Node.js"]}}. '
+                    "Rules: use concise, meaningful category names based only on the resume; category keys "
+                    "can vary; put each skill in the single most appropriate category; use skill names as "
+                    "written in the resume when possible; do not invent skills; return "
+                    '{"categories":{}} when no technical skills are found; do not include any other keys.'
                 ),
             },
             {"role": "user", "content": resume_text[:12000]},
@@ -61,14 +66,32 @@ async def _get_skills_from_groq(resume_text: str) -> list[str]:
     try:
         content = response.json()["choices"][0]["message"]["content"]
         data = json.loads(content)
-        skills = data["skills"]
+        categories = data["categories"]
     except (KeyError, IndexError, TypeError, json.JSONDecodeError) as exc:
         raise HTTPException(status_code=502, detail="Invalid response from Groq.") from exc
 
-    return [skill for skill in skills if isinstance(skill, str) and skill.strip()]
+    if not isinstance(categories, dict):
+        raise HTTPException(status_code=502, detail="Invalid response from Groq.")
 
+    cleaned_categories: dict[str, list[str]] = {}
 
-async def extract_resume_data(file: UploadFile) -> dict[str, str | int | list[str]]:
+    for category, skills in categories.items():
+        if not isinstance(category, str) or not category.strip():
+            continue
+        if not isinstance(skills, list):
+            continue
+
+        cleaned_categories[category.strip()] = list(
+            dict.fromkeys(
+                skill.strip()
+                for skill in skills
+                if isinstance(skill, str) and skill.strip()
+            )
+        )
+
+    return cleaned_categories
+
+async def extract_resume_data(file: UploadFile) -> dict[str, str | int | dict[str, list[str]]]:
     if not file.filename:
         raise HTTPException(status_code=400, detail="Filename is missing.")
 
@@ -91,10 +114,9 @@ async def extract_resume_data(file: UploadFile) -> dict[str, str | int | list[st
     if not text:
         raise HTTPException(status_code=400, detail="No readable text found in the resume.")
 
-    skills = await _get_skills_from_groq(text)
+    skill_categories = await _get_skills_from_groq(text)
 
     return {
-        "text": text,
         "page_count": page_count,
-        "skills": skills,
+        "skill_categories": skill_categories,
     }

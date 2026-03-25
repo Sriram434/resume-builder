@@ -12,6 +12,5 @@ async def upload_resume(file: UploadFile = File(...)):
         "filename": file.filename,
         "content_type": file.content_type,
         "page_count": resume_data["page_count"],
-        "skills": resume_data["skills"],
-        "text": resume_data["text"],
+        "skill_categories": resume_data["skill_categories"]
     }
